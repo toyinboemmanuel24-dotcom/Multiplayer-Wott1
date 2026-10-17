@@ -11,8 +11,10 @@ import {
   ArrowRight,
   LogOut,
   Crown,
-  Mail,
+  CheckCircle2,
+  Clock,
   UserCheck,
+  Zap,
 } from 'lucide-react';
 import { GameRoom, PlayerSummary } from '../types/wott';
 import { User } from 'firebase/auth';
@@ -31,6 +33,7 @@ interface LobbyViewProps {
   onJoinRoom: (roomCode: string) => Promise<void>;
   onStartGame: () => Promise<void>;
   onAddBot: () => Promise<void>;
+  onToggleReady: () => Promise<void>;
   onOpenRules: () => void;
   onSignInWithGoogle: () => Promise<void>;
   onSignOut: () => Promise<void>;
@@ -55,6 +58,7 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
   onJoinRoom,
   onStartGame,
   onAddBot,
+  onToggleReady,
   onOpenRules,
   onSignInWithGoogle,
   onSignOut,
@@ -105,15 +109,21 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
     }
   };
 
-  const isHost = room?.hostId === currentUserId;
-  const canStart = (room?.players.length ?? 0) >= 2;
+  const isHost = room?.hostId === currentUserId || (room?.players && room.players[0]?.id === currentUserId);
+  const me = room?.players.find((p) => p.id === currentUserId);
+  const myReadyState = me?.isReady ?? isHost;
+
+  // Count ready players
+  const readyPlayersCount = room?.players.filter((p) => p.isReady || p.isHost || p.isBot).length ?? 0;
+  const totalPlayers = room?.players.length ?? 0;
+  const allReady = totalPlayers >= 2 && readyPlayersCount === totalPlayers;
 
   // Render Waiting Room Lobby if already in a room
   if (room && room.status === 'waiting') {
     return (
       <div className="max-w-2xl w-full mx-auto p-4 sm:p-6 bg-stone-900/90 border border-amber-600/40 rounded-3xl shadow-2xl backdrop-blur-md text-stone-100 animate-fade-in">
         {/* Lobby Header */}
-        <div className="text-center mb-6">
+        <div className="text-center mb-5">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs font-bold uppercase tracking-wider mb-2">
             <Users size={14} /> Room Lobby
           </div>
@@ -121,12 +131,12 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
             Game Room: <span className="font-mono text-white tracking-widest">{room.id}</span>
           </h2>
           <p className="text-sm text-stone-300 mt-1">
-            Share the code or link with your friends to join the match!
+            Share the code with friends! Once players click <strong className="text-emerald-400">Ready</strong>, the host can start the game.
           </p>
         </div>
 
         {/* Room Code & Share Box */}
-        <div className="bg-stone-950/80 p-4 rounded-2xl border border-stone-800 flex flex-col sm:flex-row items-center justify-between gap-4 mb-6">
+        <div className="bg-stone-950/80 p-4 rounded-2xl border border-stone-800 flex flex-col sm:flex-row items-center justify-between gap-4 mb-5">
           <div className="text-center sm:text-left">
             <div className="text-xs text-stone-400 uppercase tracking-wider font-semibold">
               Multiplayer Room Code
@@ -155,16 +165,70 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
           </div>
         </div>
 
+        {/* Ready Action Banner for Current Player */}
+        <div className="mb-5 p-3.5 rounded-2xl bg-gradient-to-r from-stone-950 via-stone-900 to-stone-950 border border-stone-800 flex flex-col sm:flex-row items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <div
+              className={`w-9 h-9 rounded-xl flex items-center justify-center font-bold text-sm shadow ${
+                myReadyState
+                  ? 'bg-emerald-500 text-stone-950'
+                  : 'bg-amber-500/20 text-amber-400 border border-amber-500/40'
+              }`}
+            >
+              {myReadyState ? <Check size={20} /> : <Clock size={18} />}
+            </div>
+            <div>
+              <div className="text-xs font-bold text-stone-200">
+                Your Status:{' '}
+                <span className={myReadyState ? 'text-emerald-400 font-black' : 'text-amber-400 font-bold'}>
+                  {myReadyState ? 'Ready to Play!' : 'Not Ready Yet'}
+                </span>
+              </div>
+              <div className="text-[11px] text-stone-400">
+                {myReadyState
+                  ? 'Waiting for host to start the game...'
+                  : 'Click Ready so the host can start!'}
+              </div>
+            </div>
+          </div>
+
+          <button
+            onClick={onToggleReady}
+            disabled={isCreatingOrJoining}
+            className={`w-full sm:w-auto px-5 py-2.5 rounded-xl font-black text-xs shadow-lg transition-all cursor-pointer active:scale-95 flex items-center justify-center gap-2 ${
+              myReadyState
+                ? 'bg-stone-800 hover:bg-stone-700 text-stone-200 border border-stone-700'
+                : 'bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-stone-950 shadow-emerald-500/25 animate-pulse'
+            }`}
+          >
+            {myReadyState ? (
+              <>
+                <CheckCircle2 size={15} className="text-emerald-400" />
+                <span>You are Ready (Click to Cancel)</span>
+              </>
+            ) : (
+              <>
+                <Zap size={15} />
+                <span>Click Here to Ready Up!</span>
+              </>
+            )}
+          </button>
+        </div>
+
         {/* Players in Room */}
         <div className="mb-6">
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-sm font-bold uppercase tracking-wider text-stone-400 flex items-center gap-2">
-              <Users size={16} /> Players Joined ({room.players.length} / {room.maxPlayers})
+              <Users size={16} /> Players in Lobby ({room.players.length} / {room.maxPlayers})
+              <span className="text-xs font-normal text-stone-500">
+                ({readyPlayersCount} Ready)
+              </span>
             </h3>
             {isHost && room.players.length < room.maxPlayers && (
               <button
                 onClick={onAddBot}
-                className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-stone-800 hover:bg-stone-700 text-amber-300 text-xs font-bold border border-stone-700 transition-colors cursor-pointer"
+                disabled={isCreatingOrJoining}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-stone-800 hover:bg-stone-700 text-amber-300 text-xs font-bold border border-stone-700 transition-colors cursor-pointer"
               >
                 <Bot size={14} /> Add AI Bot
               </button>
@@ -174,21 +238,23 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {room.players.map((p) => {
               const isCurrent = p.id === currentUserId;
+              const isPlayerReady = p.isReady || p.isHost || p.isBot;
+
               return (
                 <div
                   key={p.id}
-                  className={`flex items-center justify-between p-3 rounded-2xl border ${
+                  className={`flex items-center justify-between p-3.5 rounded-2xl border transition-all ${
                     isCurrent
                       ? 'bg-amber-950/40 border-amber-500/60 ring-1 ring-amber-500/30'
                       : 'bg-stone-950/50 border-stone-800'
                   }`}
                 >
                   <div className="flex items-center gap-3">
-                    <div className="w-11 h-11 rounded-2xl bg-stone-800 border border-stone-700 flex items-center justify-center text-2xl shadow-inner">
+                    <div className="w-12 h-12 rounded-2xl bg-stone-800 border border-stone-700 flex items-center justify-center text-2xl shadow-inner">
                       {p.avatar}
                     </div>
                     <div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-1.5 flex-wrap">
                         <span className="font-bold text-sm text-stone-100">
                           {p.name} {isCurrent && '(You)'}
                         </span>
@@ -203,8 +269,20 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
                           </span>
                         )}
                       </div>
-                      <div className="text-[11px] text-emerald-400 font-semibold flex items-center gap-1">
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> Ready
+
+                      {/* Ready Badge */}
+                      <div className="mt-1 flex items-center gap-1">
+                        {isPlayerReady ? (
+                          <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-md border border-emerald-500/30">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                            Ready
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded-md border border-amber-500/30">
+                            <Clock size={11} />
+                            Waiting...
+                          </span>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -216,7 +294,7 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
             {Array.from({ length: Math.max(0, room.maxPlayers - room.players.length) }).map((_, i) => (
               <div
                 key={`empty-${i}`}
-                className="flex items-center justify-center p-3 rounded-2xl border border-dashed border-stone-800 bg-stone-950/20 text-stone-500 text-xs font-medium"
+                className="flex items-center justify-center p-3.5 rounded-2xl border border-dashed border-stone-800 bg-stone-950/20 text-stone-500 text-xs font-medium"
               >
                 Waiting for friend to join...
               </div>
@@ -234,13 +312,32 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
           </button>
 
           {isHost ? (
-            <button
-              onClick={onStartGame}
-              disabled={!canStart}
-              className="w-full sm:w-auto flex items-center justify-center gap-2 px-8 py-3.5 rounded-2xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-stone-950 text-sm font-black shadow-xl shadow-amber-500/25 disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer active:scale-95"
-            >
-              <Play size={18} fill="currentColor" /> Start Game ({room.players.length} Players)
-            </button>
+            <div className="w-full sm:w-auto flex flex-col sm:flex-row items-center gap-2">
+              {room.players.length === 1 && (
+                <button
+                  onClick={onAddBot}
+                  disabled={isCreatingOrJoining}
+                  className="w-full sm:w-auto px-4 py-3.5 rounded-2xl bg-stone-800 hover:bg-stone-700 text-amber-300 text-xs font-bold border border-amber-500/40 transition-colors cursor-pointer"
+                >
+                  <Bot size={15} className="inline mr-1" /> Add Bot to Play Solo
+                </button>
+              )}
+
+              <button
+                onClick={onStartGame}
+                disabled={isCreatingOrJoining}
+                className="w-full sm:w-auto flex items-center justify-center gap-2 px-8 py-3.5 rounded-2xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-stone-950 text-sm font-black shadow-xl shadow-amber-500/25 transition-all cursor-pointer active:scale-95"
+              >
+                <Play size={18} fill="currentColor" />
+                {isCreatingOrJoining
+                  ? 'Starting Wott...'
+                  : allReady
+                  ? `Start Game Now (${room.players.length} Players)`
+                  : room.players.length === 1
+                  ? 'Start Game (Adds Bot)'
+                  : `Start Game (${readyPlayersCount}/${room.players.length} Ready)`}
+              </button>
+            </div>
           ) : (
             <div className="flex items-center gap-2 text-xs text-amber-300 font-medium animate-pulse">
               <span className="w-2 h-2 rounded-full bg-amber-400" />
@@ -329,7 +426,7 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
         <label className="block text-xs font-bold uppercase tracking-wider text-stone-400">
           Player Profile & Email
         </label>
-        
+
         <div className="flex flex-col sm:flex-row items-center gap-3">
           <div className="w-14 h-14 rounded-2xl bg-stone-800 border-2 border-amber-500/60 flex items-center justify-center text-3xl shadow-inner shrink-0">
             {userAvatar}

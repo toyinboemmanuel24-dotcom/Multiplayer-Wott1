@@ -221,10 +221,11 @@ export default function App() {
 
       const newPlayer: PlayerSummary = {
         id: uid,
-        name: userName.trim() || 'Player 1',
+        name: userName.trim() || 'Emmanuel',
         avatar: userAvatar,
         cardCount: 5,
         isHost: true,
+        isReady: true,
         eliminated: false,
         hasTimeoutWarning: false,
         consecutiveTimeouts: 0,
@@ -311,6 +312,7 @@ export default function App() {
           avatar: userAvatar,
           cardCount: 5,
           isHost: false,
+          isReady: false,
           eliminated: false,
           hasTimeoutWarning: false,
           consecutiveTimeouts: 0,
@@ -364,12 +366,55 @@ export default function App() {
     }
   };
 
-  // Start Game (Deals 5 cards each, sets up 30 card market)
+  // Toggle ready state for players in lobby
+  const handleToggleReady = async () => {
+    if (!room || !currentUserId) return;
+    try {
+      const updatedPlayers = room.players.map((p) =>
+        p.id === currentUserId ? { ...p, isReady: !p.isReady } : p
+      );
+      await updateDoc(doc(db, 'rooms', room.id), {
+        players: updatedPlayers,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `rooms/${room.id}`);
+    }
+  };
+
+  // Start Game (Deals 5 cards each, sets up 30 card market, starts the match)
   const handleStartGame = async () => {
-    if (!room || room.hostId !== currentUserId) return;
+    if (!room) return;
+    const isHost = room.hostId === currentUserId || (room.players.length > 0 && room.players[0].id === currentUserId);
+    if (!isHost) {
+      setErrorMessage(`Only the host (${room.players[0]?.name || 'Host'}) can start the game.`);
+      return;
+    }
+
+    setIsCreatingOrJoining(true);
+    setErrorMessage(null);
 
     try {
-      const playerIds = room.players.map((p) => p.id);
+      let playersToStart = [...room.players];
+
+      // If only 1 player is present, automatically add an AI Bot so the game can start!
+      if (playersToStart.length === 1) {
+        const botPlayer: PlayerSummary = {
+          id: `bot_${Date.now()}_0`,
+          name: 'Kemi Bot',
+          avatar: '🤖',
+          cardCount: 5,
+          isHost: false,
+          isReady: true,
+          eliminated: false,
+          hasTimeoutWarning: false,
+          consecutiveTimeouts: 0,
+          isBot: true,
+        };
+        playersToStart.push(botPlayer);
+      }
+
+      const playerIds = playersToStart.map((p) => p.id);
       const { hands, activeCard, discardPile, market } = dealNewGame(playerIds);
 
       // Save each player's private hand
@@ -382,10 +427,16 @@ export default function App() {
         });
       }
 
+      // Immediately set local hand for current player
+      if (hands[currentUserId]) {
+        setPlayerHand(hands[currentUserId]);
+      }
+
       // Update room state
-      const updatedPlayers: PlayerSummary[] = room.players.map((p) => ({
+      const updatedPlayers: PlayerSummary[] = playersToStart.map((p) => ({
         ...p,
         cardCount: 5,
+        isReady: true,
         eliminated: false,
         hasTimeoutWarning: false,
         consecutiveTimeouts: 0,
@@ -394,7 +445,7 @@ export default function App() {
       await updateDoc(doc(db, 'rooms', room.id), {
         status: 'in_progress',
         players: updatedPlayers,
-        turnPlayerId: room.players[0].id,
+        turnPlayerId: updatedPlayers[0].id,
         turnIndex: 0,
         direction: 1,
         activeCard,
@@ -407,8 +458,8 @@ export default function App() {
         turnDuration: 25,
         lastAction: {
           text: `Game started! First card is ${activeCard.number} ${activeCard.shape}`,
-          playerId: room.players[0].id,
-          playerName: room.players[0].name,
+          playerId: updatedPlayers[0].id,
+          playerName: updatedPlayers[0].name,
           timestamp: Date.now(),
           badgeType: 'info',
         },
@@ -417,7 +468,11 @@ export default function App() {
         updatedAt: new Date().toISOString(),
       });
     } catch (err) {
+      console.error('Failed to start game:', err);
       handleFirestoreError(err, OperationType.UPDATE, `rooms/${room.id}`);
+      setErrorMessage('Could not start game. Please try again.');
+    } finally {
+      setIsCreatingOrJoining(false);
     }
   };
 
@@ -880,6 +935,7 @@ export default function App() {
             onJoinRoom={handleJoinRoom}
             onStartGame={handleStartGame}
             onAddBot={handleAddBot}
+            onToggleReady={handleToggleReady}
             onOpenRules={() => setShowRulesModal(true)}
             onSignInWithGoogle={handleGoogleSignIn}
             onSignOut={handleSignOut}

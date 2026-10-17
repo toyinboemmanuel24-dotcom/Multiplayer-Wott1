@@ -21,6 +21,7 @@ export interface PlayerSummary {
   isMicActive?: boolean;
   isSpeakerActive?: boolean;
   isBot?: boolean;
+  isReady?: boolean;
 }
 
 export interface GameRoom {
