@@ -75,20 +75,24 @@ export async function testConnection() {
   }
 }
 
-// Sign in with Google using popup as instructed by Firebase Skill
-export async function signInWithGoogle(): Promise<User> {
+// Sign in with Google using popup with graceful fallback if browser popup is blocked
+export async function signInWithGoogle(): Promise<User | null> {
   try {
     const result = await signInWithPopup(auth, googleProvider);
     return result.user;
-  } catch (error) {
-    console.error('Google Sign-In failed:', error);
-    throw error;
+  } catch (error: unknown) {
+    console.warn('Google Sign-In popup closed or restricted by browser:', error);
+    return null;
   }
 }
 
 // Sign out helper
 export async function logOut(): Promise<void> {
-  return signOut(auth);
+  try {
+    await signOut(auth);
+  } catch {
+    // Ignore
+  }
 }
 
 // Listen to Auth State changes

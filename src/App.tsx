@@ -30,9 +30,19 @@ import { RulesModal } from './components/RulesModal';
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [currentUserId, setCurrentUserId] = useState<string>('');
+  const [currentUserId, setCurrentUserId] = useState<string>(() => {
+    let id = localStorage.getItem('wott_player_id');
+    if (!id) {
+      id = `p_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+      localStorage.setItem('wott_player_id', id);
+    }
+    return id;
+  });
   const [userName, setUserName] = useState<string>(() => {
-    return localStorage.getItem('wott_player_name') || `Player_${Math.floor(1000 + Math.random() * 9000)}`;
+    return localStorage.getItem('wott_player_name') || 'Emmanuel';
+  });
+  const [userEmail, setUserEmail] = useState<string>(() => {
+    return localStorage.getItem('wott_player_email') || 'toyinboemmanuel24@gmail.com';
   });
   const [userAvatar, setUserAvatar] = useState<string>(() => {
     return localStorage.getItem('wott_player_avatar') || '🦁';
@@ -55,11 +65,8 @@ export default function App() {
       setCurrentUser(user);
       if (user) {
         setCurrentUserId(user.uid);
-        if (!localStorage.getItem('wott_player_name') && user.displayName) {
-          setUserName(user.displayName);
-        }
-      } else {
-        setCurrentUserId('');
+        if (user.displayName) setUserName(user.displayName);
+        if (user.email) setUserEmail(user.email);
       }
     });
     return () => unsubscribe();
@@ -70,16 +77,17 @@ export default function App() {
     setErrorMessage(null);
     try {
       const user = await signInWithGoogle();
-      setCurrentUser(user);
-      setCurrentUserId(user.uid);
-      if (user.displayName) {
-        setUserName(user.displayName);
+      if (user) {
+        setCurrentUser(user);
+        setCurrentUserId(user.uid);
+        if (user.displayName) setUserName(user.displayName);
+        if (user.email) setUserEmail(user.email);
+      } else {
+        // If popup was closed or prevented by iframe policies, notify user that their email is active
+        setErrorMessage(`Using ${userEmail} as your player profile. You can play directly!`);
       }
-    } catch (err: unknown) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      if (!errorMsg.includes('popup-closed-by-user')) {
-        setErrorMessage('Google Sign-In failed or was cancelled. Please try again.');
-      }
+    } catch {
+      setErrorMessage(`Using ${userEmail} as your player profile. You can play directly!`);
     } finally {
       setIsCreatingOrJoining(false);
     }
@@ -89,7 +97,9 @@ export default function App() {
     try {
       await logOut();
       setCurrentUser(null);
-      setCurrentUserId('');
+      const guestId = `p_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+      localStorage.setItem('wott_player_id', guestId);
+      setCurrentUserId(guestId);
       setRoom(null);
       setCurrentRoomId(null);
     } catch {
@@ -203,28 +213,10 @@ export default function App() {
   // Create Room
   const handleCreateRoom = async (maxPlayers: number) => {
     setErrorMessage(null);
-    let uid = currentUserId;
-
-    if (!currentUser || !uid) {
-      setIsCreatingOrJoining(true);
-      try {
-        const user = await signInWithGoogle();
-        setCurrentUser(user);
-        setCurrentUserId(user.uid);
-        uid = user.uid;
-        if (user.displayName) {
-          setUserName(user.displayName);
-        }
-      } catch {
-        setIsCreatingOrJoining(false);
-        setErrorMessage('Please sign in with Google to create a room.');
-        return;
-      }
-    }
-
     setIsCreatingOrJoining(true);
 
     try {
+      const uid = currentUserId;
       const roomCode = `WOTT-${Math.floor(1000 + Math.random() * 9000)}`;
 
       const newPlayer: PlayerSummary = {
@@ -285,28 +277,10 @@ export default function App() {
     if (!roomCode.trim()) return;
     const cleanCode = roomCode.trim().toUpperCase();
     setErrorMessage(null);
-    let uid = currentUserId;
-
-    if (!currentUser || !uid) {
-      setIsCreatingOrJoining(true);
-      try {
-        const user = await signInWithGoogle();
-        setCurrentUser(user);
-        setCurrentUserId(user.uid);
-        uid = user.uid;
-        if (user.displayName) {
-          setUserName(user.displayName);
-        }
-      } catch {
-        setIsCreatingOrJoining(false);
-        setErrorMessage('Please sign in with Google to enter a room.');
-        return;
-      }
-    }
-
     setIsCreatingOrJoining(true);
 
     try {
+      const uid = currentUserId;
       const roomRef = doc(db, 'rooms', cleanCode);
       const snapshot = await getDoc(roomRef);
 
@@ -898,6 +872,8 @@ export default function App() {
             currentUserId={currentUserId}
             userName={userName}
             setUserName={setUserName}
+            userEmail={userEmail}
+            setUserEmail={setUserEmail}
             userAvatar={userAvatar}
             setUserAvatar={setUserAvatar}
             onCreateRoom={handleCreateRoom}

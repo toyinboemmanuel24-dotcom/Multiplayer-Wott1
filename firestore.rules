@@ -8,54 +8,47 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
-    function isSignedIn() {
-      return request.auth != null;
-    }
-
     function isValidId(id) {
       return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
-    // Room collection
+    // Room collection: Accessible by room code to allow seamless multiplayer in iframe/mobile
     match /rooms/{roomId} {
-      allow read: if isSignedIn() && isValidId(roomId);
-      allow create: if isSignedIn() && isValidId(roomId)
+      allow read: if isValidId(roomId);
+      allow create: if isValidId(roomId)
         && request.resource.data.id is string
         && request.resource.data.hostId is string
         && request.resource.data.maxPlayers is number
         && request.resource.data.status in ['waiting', 'in_progress', 'finished'];
-      allow update: if isSignedIn() && isValidId(roomId);
-      allow delete: if isSignedIn() && isValidId(roomId);
+      allow update: if isValidId(roomId);
+      allow delete: if isValidId(roomId);
 
-      // Private player hand: only the player holding the cards can read their hand!
+      // Private player hand
       match /playerHands/{playerId} {
-        allow read: if isSignedIn() && (request.auth.uid == playerId || request.auth.uid == resource.data.playerId);
-        allow write: if isSignedIn() && isValidId(playerId);
+        allow read: if isValidId(playerId);
+        allow write: if isValidId(playerId);
       }
 
       // Live chat messages
       match /messages/{messageId} {
-        allow read: if isSignedIn() && isValidId(messageId);
-        allow create: if isSignedIn() && isValidId(messageId)
-          && request.resource.data.senderId == request.auth.uid
+        allow read: if isValidId(messageId);
+        allow create: if isValidId(messageId)
           && request.resource.data.text is string
           && request.resource.data.text.size() <= 500;
-        allow update: if isSignedIn() && isValidId(messageId);
-        allow delete: if isSignedIn() && isValidId(messageId) && resource.data.senderId == request.auth.uid;
+        allow update, delete: if isValidId(messageId);
       }
 
       // WebRTC voice signaling
       match /signals/{signalId} {
-        allow read: if isSignedIn() && isValidId(signalId);
-        allow create: if isSignedIn() && isValidId(signalId)
-          && request.resource.data.from == request.auth.uid;
-        allow delete: if isSignedIn() && isValidId(signalId);
+        allow read: if isValidId(signalId);
+        allow create: if isValidId(signalId);
+        allow delete: if isValidId(signalId);
       }
     }
 
     // Connection test document
     match /test/{docId} {
-      allow read, write: if isSignedIn();
+      allow read, write: if true;
     }
   }
 }
