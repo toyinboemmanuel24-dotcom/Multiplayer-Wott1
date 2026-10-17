@@ -64,12 +64,17 @@ export function getCardAction(num: number): { title?: string; desc?: string; isS
     case 8:
       return { isSpecial: true, title: 'Suspension', desc: 'Next player skipped' };
     case 14:
-      return { isSpecial: true, title: 'General Market', desc: 'All opponents draw 1' };
+      return { isSpecial: true, title: 'General Market', desc: 'All opponents draw 1 & player plays again' };
     case 20:
       return { isSpecial: true, title: 'Wott (Wildcard)', desc: 'Choose any shape' };
     default:
       return { isSpecial: false };
   }
+}
+
+// Helper to clean any undefined properties before sending to Firestore
+export function sanitizeForFirestore<T>(data: T): T {
+  return JSON.parse(JSON.stringify(data));
 }
 
 // Generate complete authentic 54-card Nigerian Whot/Wott deck
@@ -89,28 +94,38 @@ export function createWottDeck(): Card[] {
   for (const group of standardShapes) {
     for (const num of group.numbers) {
       const action = getCardAction(num);
-      cards.push({
+      const card: Card = {
         id: `card_${idCounter++}`,
         shape: group.shape,
         number: num,
         isSpecial: action.isSpecial,
-        actionTitle: action.title,
-        actionDesc: action.desc,
-      });
+      };
+      if (action.title) {
+        card.actionTitle = action.title;
+      }
+      if (action.desc) {
+        card.actionDesc = action.desc;
+      }
+      cards.push(card);
     }
   }
 
   // Populate 5 Wott 20 wildcard cards
   for (let i = 0; i < 5; i++) {
     const action = getCardAction(20);
-    cards.push({
+    const card: Card = {
       id: `card_${idCounter++}`,
       shape: 'whot',
       number: 20,
       isSpecial: true,
-      actionTitle: action.title,
-      actionDesc: action.desc,
-    });
+    };
+    if (action.title) {
+      card.actionTitle = action.title;
+    }
+    if (action.desc) {
+      card.actionDesc = action.desc;
+    }
+    cards.push(card);
   }
 
   return cards;

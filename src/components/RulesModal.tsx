@@ -81,7 +81,7 @@ export const RulesModal: React.FC<RulesModalProps> = ({ isOpen, onClose }) => {
                 <div>
                   <div className="font-bold text-amber-400">GENERAL MARKET</div>
                   <div className="text-xs text-stone-300">
-                    <strong className="text-amber-300">Every opponent</strong> in the game must draw 1 card from the General Market!
+                    <strong className="text-amber-300">Every opponent</strong> draws 1 card from Market, and the player plays again!
                   </div>
                 </div>
               </div>

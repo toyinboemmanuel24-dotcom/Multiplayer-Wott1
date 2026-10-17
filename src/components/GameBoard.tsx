@@ -16,6 +16,7 @@ import {
   Crown,
   ChevronRight,
   ShieldAlert,
+  MessageSquare,
 } from 'lucide-react';
 import { Card, CardShape, GameRoom, PlayerSummary } from '../types/wott';
 import { CardView, ShapeIcon } from './CardView';
@@ -33,6 +34,8 @@ interface GameBoardProps {
   onRematch: () => Promise<void>;
   onOpenRules: () => void;
   isHost: boolean;
+  remoteSpeakingMap?: Record<string, boolean>;
+  onOpenChat?: () => void;
 }
 
 export const GameBoard: React.FC<GameBoardProps> = ({
@@ -45,6 +48,8 @@ export const GameBoard: React.FC<GameBoardProps> = ({
   onRematch,
   onOpenRules,
   isHost,
+  remoteSpeakingMap = {},
+  onOpenChat,
 }) => {
   const [selectedCard, setSelectedCard] = useState<Card | null>(null);
   const [showShapePicker, setShowShapePicker] = useState<boolean>(false);
@@ -222,11 +227,21 @@ export const GameBoard: React.FC<GameBoardProps> = ({
           </div>
         </div>
 
-        {/* Room Code & Rules Shortcut */}
-        <div className="flex items-center gap-3">
-          <div className="text-xs text-stone-400 font-mono">
+        {/* Room Code, Chat & Rules Shortcut */}
+        <div className="flex items-center gap-2 sm:gap-3">
+          <div className="text-xs text-stone-400 font-mono hidden sm:inline">
             Room: <strong className="text-amber-400 tracking-wider">{room.id}</strong>
           </div>
+          {onOpenChat && (
+            <button
+              onClick={onOpenChat}
+              className="flex items-center gap-1 text-xs text-amber-300 hover:text-amber-200 bg-amber-500/15 hover:bg-amber-500/25 px-2.5 py-1 rounded-lg border border-amber-500/40 transition-colors cursor-pointer font-bold shadow-xs"
+              title="Open table banter & chat"
+            >
+              <MessageSquare size={14} className="text-amber-400" />
+              <span>Chat</span>
+            </button>
+          )}
           <button
             onClick={onOpenRules}
             className="flex items-center gap-1 text-xs text-stone-300 hover:text-amber-300 bg-stone-800/60 px-2.5 py-1 rounded-lg border border-stone-700/60 transition-colors cursor-pointer"
@@ -240,6 +255,10 @@ export const GameBoard: React.FC<GameBoardProps> = ({
       <div className="w-full flex items-center justify-center gap-3 sm:gap-6 flex-wrap py-2">
         {otherPlayers.map((player) => {
           const isPlayerTurn = room.turnPlayerId === player.id;
+          const recentMsg = room.recentMessages
+            ?.filter((m) => m.senderId === player.id && Date.now() - m.timestamp < 10000)
+            .slice(-1)[0];
+
           return (
             <div
               key={player.id}
@@ -249,6 +268,14 @@ export const GameBoard: React.FC<GameBoardProps> = ({
                   : 'bg-stone-900/60 border border-stone-800'
               } ${player.eliminated ? 'opacity-40 grayscale' : ''}`}
             >
+              {/* Floating Real-time Chat Speech Bubble on Opponent Avatar */}
+              {recentMsg && (
+                <div className="absolute -top-11 left-1/2 -translate-x-1/2 bg-amber-500 text-stone-950 font-black text-[11px] px-2.5 py-1 rounded-xl shadow-2xl border-2 border-stone-900 whitespace-nowrap animate-bounce z-30 pointer-events-none max-w-[170px] truncate">
+                  💬 "{recentMsg.text}"
+                  <div className="absolute top-full left-1/2 -translate-x-1/2 w-2 h-2 bg-amber-500 rotate-45 -mt-1 border-r-2 border-b-2 border-stone-900" />
+                </div>
+              )}
+
               {/* Avatar + Turn indicator ring */}
               <div className="relative mb-1">
                 <div
@@ -261,10 +288,35 @@ export const GameBoard: React.FC<GameBoardProps> = ({
                   {player.avatar}
                 </div>
 
-                {/* Mic Status */}
-                {player.isMicActive && (
-                  <span className="absolute -top-1 -right-1 w-4 h-4 bg-emerald-500 text-stone-950 rounded-full flex items-center justify-center text-[10px] shadow">
+                {/* Mic Status & Talking Pulse */}
+                {player.isMicActive ? (
+                  <span
+                    className={`absolute -top-1 -right-1 px-1.5 py-0.5 rounded-full flex items-center gap-0.5 text-[9px] font-bold shadow transition-all ${
+                      remoteSpeakingMap[player.id]
+                        ? 'bg-emerald-400 text-stone-950 ring-2 ring-emerald-300 animate-pulse'
+                        : 'bg-emerald-600 text-stone-100'
+                    }`}
+                    title={remoteSpeakingMap[player.id] ? `${player.name} is speaking` : `${player.name} mic is on`}
+                  >
                     <Mic size={10} />
+                    {remoteSpeakingMap[player.id] && <span>Talking</span>}
+                  </span>
+                ) : !player.isBot ? (
+                  <span
+                    className="absolute -top-1 -right-1 w-4 h-4 bg-stone-800 text-stone-400 border border-stone-700 rounded-full flex items-center justify-center text-[10px] shadow"
+                    title={`${player.name} mic is muted`}
+                  >
+                    <MicOff size={9} />
+                  </span>
+                ) : null}
+
+                {/* Speaker Muted Indicator */}
+                {!player.isBot && player.isSpeakerActive === false && (
+                  <span
+                    className="absolute -top-1 -left-1 w-4 h-4 bg-red-950/90 text-red-400 border border-red-800 rounded-full flex items-center justify-center text-[10px] shadow"
+                    title={`${player.name} speaker is muted`}
+                  >
+                    <VolumeX size={9} />
                   </span>
                 )}
 
@@ -431,28 +483,50 @@ export const GameBoard: React.FC<GameBoardProps> = ({
           </div>
         </div>
 
-        {/* Interactive Hand of Cards */}
-        <div className="relative py-2 flex items-center justify-center gap-2 sm:gap-3 flex-wrap min-h-[120px] sm:min-h-[150px]">
-          {playerHand.map((card, index) => {
-            const isPlayable = isMyTurn && playableCardIds.has(card.id);
+        {/* Interactive Hand of Cards: Well Arranged Horizontally Beside Each Other */}
+        <div className="w-full flex flex-col items-center justify-center">
+          <div className="w-full overflow-x-auto overflow-y-visible pt-8 pb-4 px-2 sm:px-4 scrollbar-thin scrollbar-thumb-amber-600/40">
+            <div className="flex items-end justify-center min-w-max mx-auto -space-x-3 sm:-space-x-4 md:-space-x-5 px-6">
+              {playerHand.map((card, index) => {
+                const isPlayable = isMyTurn && playableCardIds.has(card.id);
 
-            return (
-              <div
-                key={card.id}
-                style={{
-                  zIndex: index + 10,
-                }}
-                className="transition-all duration-200"
-              >
-                <CardView
-                  card={card}
-                  size="md"
-                  isPlayable={isPlayable}
-                  onClick={() => isPlayable && handleCardClick(card)}
-                />
-              </div>
-            );
-          })}
+                return (
+                  <div
+                    key={card.id}
+                    style={{
+                      zIndex: isPlayable ? 35 + index : 10 + index,
+                    }}
+                    className={`relative transition-all duration-300 ease-out transform ${
+                      isPlayable
+                        ? '-translate-y-6 sm:-translate-y-8 hover:-translate-y-10 hover:scale-105 hover:z-50'
+                        : 'translate-y-0 hover:-translate-y-2 hover:z-30 opacity-85 hover:opacity-100'
+                    }`}
+                  >
+                    {/* Suggested Card Pop-up Indicator Badge */}
+                    {isPlayable && (
+                      <div className="absolute -top-6 left-1/2 -translate-x-1/2 z-30 pointer-events-none">
+                        <span className="bg-gradient-to-r from-amber-500 to-yellow-400 text-stone-950 font-black text-[9px] sm:text-[10px] px-2 py-0.5 rounded-full shadow-lg border border-amber-200 animate-bounce flex items-center gap-0.5 whitespace-nowrap">
+                          ⚡️ PLAY
+                        </span>
+                      </div>
+                    )}
+
+                    <CardView
+                      card={card}
+                      size="md"
+                      isPlayable={isPlayable}
+                      onClick={() => isPlayable && handleCardClick(card)}
+                      className={
+                        isPlayable
+                          ? 'ring-4 ring-amber-400 shadow-2xl shadow-amber-500/40'
+                          : ''
+                      }
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         </div>
       </div>
 
@@ -460,6 +534,10 @@ export const GameBoard: React.FC<GameBoardProps> = ({
       <WottShapePickerModal
         isOpen={showShapePicker}
         onSelectShape={handleShapeSelected}
+        onCancel={() => {
+          setShowShapePicker(false);
+          setPendingWottCard(null);
+        }}
       />
 
       {/* Game Finished / Check Modal */}

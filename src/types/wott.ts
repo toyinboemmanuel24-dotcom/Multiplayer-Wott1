@@ -51,6 +51,8 @@ export interface GameRoom {
   winnerName: string | null;
   turnStartedAt: number; // Date.now() timestamp
   turnDuration: number; // 25s normally, 35s if player had a previous timeout warning
+  allHands?: Record<string, Card[]>; // Real-time fallback for instant hand hydration across devices
+  recentMessages?: ChatMessage[]; // Real-time table chat buffer for instant synchronization
   createdAt: string;
   updatedAt: string;
 }
@@ -65,6 +67,12 @@ export interface ChatMessage {
   type: 'chat' | 'system' | 'action';
   timestamp: number;
   likes?: string[]; // Array of player IDs who liked this message
+  reactions?: Record<string, string[]>; // Map of emoji -> array of player IDs (e.g. '❤️', '🔥', '😂', '👍')
+  replyTo?: {
+    id: string;
+    senderName: string;
+    text: string;
+  };
 }
 
 export interface WebRTCSignal {

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   doc,
   setDoc,
@@ -12,29 +12,47 @@ import {
   signInWithGoogle,
   logOut,
   onAuthUserChanged,
+  getUserProfile,
   testConnection,
   handleFirestoreError,
   OperationType,
 } from './firebase/config';
-import { User } from 'firebase/auth';
+
 import { Card, CardShape, GameRoom, PlayerSummary } from './types/wott';
 import {
   dealNewGame,
   drawCardsWithRecycle,
   canPlayCard,
+  sanitizeForFirestore,
 } from './utils/wottDeck';
+import { AuthView } from './components/AuthView';
 import { LobbyView } from './components/LobbyView';
 import { GameBoard } from './components/GameBoard';
 import { ChatVoiceBar } from './components/ChatVoiceBar';
 import { RulesModal } from './components/RulesModal';
+import { sounds } from './utils/audio';
+
+export interface WottAuthUser {
+  uid: string;
+  email: string;
+  displayName: string;
+  avatar: string;
+}
 
 export default function App() {
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [currentUser, setCurrentUser] = useState<WottAuthUser | null>(() => {
+    try {
+      const saved = localStorage.getItem('wott_auth_user');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
   const [currentUserId, setCurrentUserId] = useState<string>(() => {
-    let id = localStorage.getItem('wott_player_id');
+    let id = sessionStorage.getItem('wott_player_session_id');
     if (!id) {
       id = `p_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-      localStorage.setItem('wott_player_id', id);
+      sessionStorage.setItem('wott_player_session_id', id);
     }
     return id;
   });
@@ -42,7 +60,7 @@ export default function App() {
     return localStorage.getItem('wott_player_name') || 'Emmanuel';
   });
   const [userEmail, setUserEmail] = useState<string>(() => {
-    return localStorage.getItem('wott_player_email') || 'toyinboemmanuel24@gmail.com';
+    return localStorage.getItem('wott_player_email') || '';
   });
   const [userAvatar, setUserAvatar] = useState<string>(() => {
     return localStorage.getItem('wott_player_avatar') || '🦁';
@@ -55,39 +73,98 @@ export default function App() {
   const [isCreatingOrJoining, setIsCreatingOrJoining] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [showRulesModal, setShowRulesModal] = useState<boolean>(false);
+  const [remoteSpeakingMap, setRemoteSpeakingMap] = useState<Record<string, boolean>>({});
+  const [chatOpenTrigger, setChatOpenTrigger] = useState<number>(0);
 
   const botTurnTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Initialize Firebase Auth & test connection on mount
   useEffect(() => {
     testConnection();
-    const unsubscribe = onAuthUserChanged((user) => {
-      setCurrentUser(user);
-      if (user) {
-        setCurrentUserId(user.uid);
-        if (user.displayName) setUserName(user.displayName);
-        if (user.email) setUserEmail(user.email);
+    const unsubscribe = onAuthUserChanged(async (fbUser) => {
+      if (fbUser) {
+        let name = fbUser.displayName || '';
+        let avatar = userAvatar;
+        try {
+          const profile = await getUserProfile(fbUser.uid);
+          if (profile?.displayName) {
+            name = profile.displayName;
+          }
+          if (profile?.avatar) {
+            avatar = profile.avatar;
+          }
+        } catch {
+          // Fallback
+        }
+
+        if (!name) name = fbUser.email?.split('@')[0] || 'Player';
+        const userObj: WottAuthUser = {
+          uid: fbUser.uid,
+          email: fbUser.email || '',
+          displayName: name,
+          avatar,
+        };
+
+        setCurrentUser(userObj);
+        setCurrentUserId(fbUser.uid);
+        setUserName(name);
+        setUserAvatar(avatar);
+        localStorage.setItem('wott_auth_user', JSON.stringify(userObj));
+        localStorage.setItem('wott_player_name', name);
+        localStorage.setItem('wott_player_avatar', avatar);
       }
     });
     return () => unsubscribe();
   }, []);
 
+  const handleAuthSuccess = (userData: { uid: string; name: string; email: string; avatar: string }) => {
+    const userObj: WottAuthUser = {
+      uid: userData.uid,
+      email: userData.email,
+      displayName: userData.name,
+      avatar: userData.avatar,
+    };
+    setCurrentUser(userObj);
+    setCurrentUserId(userData.uid);
+    setUserName(userData.name);
+    setUserEmail(userData.email);
+    setUserAvatar(userData.avatar);
+    localStorage.setItem('wott_auth_user', JSON.stringify(userObj));
+    localStorage.setItem('wott_player_name', userData.name);
+    localStorage.setItem('wott_player_avatar', userData.avatar);
+  };
+
   const handleGoogleSignIn = async () => {
     setIsCreatingOrJoining(true);
     setErrorMessage(null);
     try {
-      const user = await signInWithGoogle();
-      if (user) {
-        setCurrentUser(user);
-        setCurrentUserId(user.uid);
-        if (user.displayName) setUserName(user.displayName);
-        if (user.email) setUserEmail(user.email);
-      } else {
-        // If popup was closed or prevented by iframe policies, notify user that their email is active
-        setErrorMessage(`Using ${userEmail} as your player profile. You can play directly!`);
+      const fbUser = await signInWithGoogle();
+      if (fbUser) {
+        let name = fbUser.displayName || fbUser.email?.split('@')[0] || 'Player';
+        let avatar = userAvatar;
+        try {
+          const profile = await getUserProfile(fbUser.uid);
+          if (profile?.displayName) name = profile.displayName;
+          if (profile?.avatar) avatar = profile.avatar;
+        } catch {}
+
+        const userObj: WottAuthUser = {
+          uid: fbUser.uid,
+          email: fbUser.email || '',
+          displayName: name,
+          avatar,
+        };
+
+        setCurrentUser(userObj);
+        setCurrentUserId(fbUser.uid);
+        setUserName(name);
+        setUserAvatar(avatar);
+        localStorage.setItem('wott_auth_user', JSON.stringify(userObj));
+        localStorage.setItem('wott_player_name', name);
+        localStorage.setItem('wott_player_avatar', avatar);
       }
     } catch {
-      setErrorMessage(`Using ${userEmail} as your player profile. You can play directly!`);
+      setErrorMessage('Could not sign in with Google. Please use email sign in.');
     } finally {
       setIsCreatingOrJoining(false);
     }
@@ -96,15 +173,13 @@ export default function App() {
   const handleSignOut = async () => {
     try {
       await logOut();
-      setCurrentUser(null);
-      const guestId = `p_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-      localStorage.setItem('wott_player_id', guestId);
-      setCurrentUserId(guestId);
-      setRoom(null);
-      setCurrentRoomId(null);
     } catch {
       // Ignore
     }
+    setCurrentUser(null);
+    localStorage.removeItem('wott_auth_user');
+    setRoom(null);
+    setCurrentRoomId(null);
   };
 
   // Save profile to local storage
@@ -125,7 +200,16 @@ export default function App() {
       roomRef,
       (snapshot) => {
         if (snapshot.exists()) {
-          setRoom(snapshot.data() as GameRoom);
+          const roomData = snapshot.data() as GameRoom;
+          setRoom(roomData);
+          // Hydrate hand if room has allHands fallback and local hand is not populated yet
+          if (roomData.allHands) {
+            const uid = currentUserId;
+            const targetHand = roomData.allHands[uid] || (roomData.players.length > 0 && roomData.players[0].id === uid ? roomData.allHands[roomData.players[0].id] : undefined);
+            if (targetHand && targetHand.length > 0) {
+              setPlayerHand((prev) => (prev.length === 0 ? targetHand : prev));
+            }
+          }
         } else {
           setErrorMessage('Game room does not exist or has closed.');
           setRoom(null);
@@ -133,12 +217,12 @@ export default function App() {
         }
       },
       (error) => {
-        handleFirestoreError(error, OperationType.GET, `rooms/${currentRoomId}`);
+        console.warn('Room snapshot notice:', error);
       }
     );
 
     return () => unsubscribe();
-  }, [currentRoomId]);
+  }, [currentRoomId, currentUserId]);
 
   // Subscribe to player's private hand in subcollection
   useEffect(() => {
@@ -150,11 +234,13 @@ export default function App() {
       (snapshot) => {
         if (snapshot.exists()) {
           const data = snapshot.data();
-          setPlayerHand(data.cards || []);
+          if (data && Array.isArray(data.cards) && data.cards.length > 0) {
+            setPlayerHand(data.cards);
+          }
         }
       },
       (error) => {
-        handleFirestoreError(error, OperationType.GET, `rooms/${currentRoomId}/playerHands/${currentUserId}`);
+        console.warn('Hand snapshot notice:', error);
       }
     );
 
@@ -382,15 +468,35 @@ export default function App() {
     }
   };
 
-  // Start Game (Deals 5 cards each, sets up 30 card market, starts the match)
+  // Start Game (Deals 5 cards each, sets up 30 card market, starts the match immediately)
   const handleStartGame = async () => {
     if (!room) return;
-    const isHost = room.hostId === currentUserId || (room.players.length > 0 && room.players[0].id === currentUserId);
-    if (!isHost) {
-      setErrorMessage(`Only the host (${room.players[0]?.name || 'Host'}) can start the game.`);
+
+    const effectiveMe =
+      room.players.find((p) => p.id === currentUserId) ||
+      room.players.find((p) => p.name === userName) ||
+      room.players[0];
+    const myId = effectiveMe?.id || currentUserId;
+
+    // Strict Opponent Ready Check:
+    // Without all opponents clicking Ready, the game cannot move into play
+    const humanOpponents = room.players.filter((p) => p.id !== myId && !p.isBot);
+    const unreadyOpponents = humanOpponents.filter((p) => !p.isReady);
+
+    if (unreadyOpponents.length > 0) {
+      const names = unreadyOpponents.map((p) => p.name).join(', ');
+      setErrorMessage(`Cannot start game yet! Waiting for ${names} to click Ready.`);
       return;
     }
 
+    // Only host can start multiplayer game
+    const isHost = room.hostId === myId || room.players[0]?.id === myId;
+    if (room.players.length > 1 && !isHost) {
+      setErrorMessage('Only the room host can start the game once all players are ready.');
+      return;
+    }
+
+    sounds.playTurnAlert();
     setIsCreatingOrJoining(true);
     setErrorMessage(null);
 
@@ -417,22 +523,11 @@ export default function App() {
       const playerIds = playersToStart.map((p) => p.id);
       const { hands, activeCard, discardPile, market } = dealNewGame(playerIds);
 
-      // Save each player's private hand
-      for (const pid of playerIds) {
-        await setDoc(doc(db, `rooms/${room.id}/playerHands`, pid), {
-          playerId: pid,
-          roomId: room.id,
-          cards: hands[pid] || [],
-          updatedAt: new Date().toISOString(),
-        });
-      }
+      // Immediately set local player hand
+      const myHand = hands[currentUserId] || (playerIds.length > 0 ? hands[playerIds[0]] : []);
+      setPlayerHand(myHand);
 
-      // Immediately set local hand for current player
-      if (hands[currentUserId]) {
-        setPlayerHand(hands[currentUserId]);
-      }
-
-      // Update room state
+      // Update room state with sanitized data
       const updatedPlayers: PlayerSummary[] = playersToStart.map((p) => ({
         ...p,
         cardCount: 5,
@@ -442,7 +537,8 @@ export default function App() {
         consecutiveTimeouts: 0,
       }));
 
-      await updateDoc(doc(db, 'rooms', room.id), {
+      const newRoomData: GameRoom = {
+        ...room,
         status: 'in_progress',
         players: updatedPlayers,
         turnPlayerId: updatedPlayers[0].id,
@@ -456,6 +552,7 @@ export default function App() {
         discardPile,
         turnStartedAt: Date.now(),
         turnDuration: 25,
+        allHands: hands,
         lastAction: {
           text: `Game started! First card is ${activeCard.number} ${activeCard.shape}`,
           playerId: updatedPlayers[0].id,
@@ -466,11 +563,36 @@ export default function App() {
         winnerId: null,
         winnerName: null,
         updatedAt: new Date().toISOString(),
-      });
-    } catch (err) {
+      };
+
+      // Transition immediately into the real game on click!
+      setRoom(newRoomData);
+
+      // Save each player's private hand in subcollections in parallel
+      const handSavePromises = playerIds.map((pid) =>
+        setDoc(
+          doc(db, 'rooms', room.id, 'playerHands', pid),
+          sanitizeForFirestore({
+            playerId: pid,
+            roomId: room.id,
+            cards: hands[pid] || [],
+            updatedAt: new Date().toISOString(),
+          })
+        ).catch((err) => {
+          console.warn(`Hand subcollection sync non-fatal warning for ${pid}:`, err);
+        })
+      );
+
+      // Update room document with merge: true so all opponents sync real-time
+      const roomPayload = sanitizeForFirestore(newRoomData);
+      await Promise.all([
+        setDoc(doc(db, 'rooms', room.id), roomPayload, { merge: true }),
+        ...handSavePromises,
+      ]);
+    } catch (err: unknown) {
       console.error('Failed to start game:', err);
-      handleFirestoreError(err, OperationType.UPDATE, `rooms/${room.id}`);
-      setErrorMessage('Could not start game. Please try again.');
+      const msg = err instanceof Error ? err.message : String(err);
+      setErrorMessage(`Could not start game: ${msg}`);
     } finally {
       setIsCreatingOrJoining(false);
     }
@@ -509,12 +631,15 @@ export default function App() {
       const remainingHand = actingHand.filter((c) => c.id !== card.id);
 
       // Update player's private hand
-      await setDoc(doc(db, `rooms/${room.id}/playerHands`, actingPlayerId), {
-        playerId: actingPlayerId,
-        roomId: room.id,
-        cards: remainingHand,
-        updatedAt: new Date().toISOString(),
-      });
+      await setDoc(
+        doc(db, 'rooms', room.id, 'playerHands', actingPlayerId),
+        sanitizeForFirestore({
+          playerId: actingPlayerId,
+          roomId: room.id,
+          cards: remainingHand,
+          updatedAt: new Date().toISOString(),
+        })
+      );
 
       const currentIdx = room.players.findIndex((p) => p.id === actingPlayerId);
       const actingPlayer = room.players[currentIdx];
@@ -525,22 +650,25 @@ export default function App() {
           p.id === actingPlayerId ? { ...p, cardCount: 0 } : p
         );
 
-        await updateDoc(doc(db, 'rooms', room.id), {
-          status: 'finished',
-          winnerId: actingPlayerId,
-          winnerName: actingPlayer.name,
-          players: updatedPlayers,
-          activeCard: card,
-          discardPile: [...room.discardPile, card],
-          lastAction: {
-            text: `🏆 CHECK! ${actingPlayer.name} emptied their hand and won!`,
-            playerId: actingPlayerId,
-            playerName: actingPlayer.name,
-            timestamp: Date.now(),
-            badgeType: 'check',
-          },
-          updatedAt: new Date().toISOString(),
-        });
+        await updateDoc(
+          doc(db, 'rooms', room.id),
+          sanitizeForFirestore({
+            status: 'finished',
+            winnerId: actingPlayerId,
+            winnerName: actingPlayer.name,
+            players: updatedPlayers,
+            activeCard: card,
+            discardPile: [...room.discardPile, card],
+            lastAction: {
+              text: `🏆 CHECK! ${actingPlayer.name} emptied their hand and won!`,
+              playerId: actingPlayerId,
+              playerName: actingPlayer.name,
+              timestamp: Date.now(),
+              badgeType: 'check',
+            },
+            updatedAt: new Date().toISOString(),
+          })
+        );
         return;
       }
 
@@ -653,12 +781,15 @@ export default function App() {
               ? oppHandSnap.data().cards || []
               : [];
 
-            await setDoc(doc(db, `rooms/${room.id}/playerHands`, opp.id), {
-              playerId: opp.id,
-              roomId: room.id,
-              cards: [...oppCards, ...drawRes.drawnCards],
-              updatedAt: new Date().toISOString(),
-            });
+            await setDoc(
+              doc(db, 'rooms', room.id, 'playerHands', opp.id),
+              sanitizeForFirestore({
+                playerId: opp.id,
+                roomId: room.id,
+                cards: [...oppCards, ...drawRes.drawnCards],
+                updatedAt: new Date().toISOString(),
+              })
+            );
 
             updatedPlayers = updatedPlayers.map((p) =>
               p.id === opp.id
@@ -667,8 +798,8 @@ export default function App() {
             );
           }
         }
-        actionText = `🛒 GENERAL MARKET! Everyone drew 1 card from Market!`;
-        nextIndex = getNextPlayerIndex(currentIdx, updatedPlayers, 1);
+        actionText = `🛒 GENERAL MARKET! Opponents drew 1 card from Market and ${actingPlayer.name} plays again!`;
+        nextIndex = currentIdx;
       } else if (card.number === 20) {
         // WOTT WILDCARD: Shape declared
         actionText = `👑 WOTT 20! ${actingPlayer.name} called for ${declaredShape?.toUpperCase()}!`;
@@ -682,27 +813,31 @@ export default function App() {
       // If next player has timeout warning, grant them 35s grace; otherwise normal 25s
       const nextTurnDuration = nextPlayer.hasTimeoutWarning ? 35 : 25;
 
-      await updateDoc(doc(db, 'rooms', room.id), {
-        activeCard: card,
-        declaredShape: card.number === 20 ? declaredShape || null : null,
-        discardPile: newDiscardPile,
-        market: newMarket,
-        marketCount: newMarket.length,
-        players: updatedPlayers,
-        turnPlayerId: nextPlayer.id,
-        turnIndex: nextIndex,
-        turnStartedAt: Date.now(),
-        turnDuration: nextTurnDuration,
-        lastAction: {
-          text: actionText,
-          playerId: actingPlayerId,
-          playerName: actingPlayer.name,
-          timestamp: Date.now(),
-          badgeType: 'info',
-        },
-        updatedAt: new Date().toISOString(),
-      });
+      await updateDoc(
+        doc(db, 'rooms', room.id),
+        sanitizeForFirestore({
+          activeCard: card,
+          declaredShape: card.number === 20 ? declaredShape || null : null,
+          discardPile: newDiscardPile,
+          market: newMarket,
+          marketCount: newMarket.length,
+          players: updatedPlayers,
+          turnPlayerId: nextPlayer.id,
+          turnIndex: nextIndex,
+          turnStartedAt: Date.now(),
+          turnDuration: nextTurnDuration,
+          lastAction: {
+            text: actionText,
+            playerId: actingPlayerId,
+            playerName: actingPlayer.name,
+            timestamp: Date.now(),
+            badgeType: 'info',
+          },
+          updatedAt: new Date().toISOString(),
+        })
+      );
     } catch (err) {
+      console.error('Move error:', err);
       handleFirestoreError(err, OperationType.UPDATE, `rooms/${room.id}`);
     }
   };
@@ -715,12 +850,15 @@ export default function App() {
       const drawRes = drawCardsWithRecycle(room.market, room.discardPile, 1);
       const updatedHand = [...actingHand, ...drawRes.drawnCards];
 
-      await setDoc(doc(db, `rooms/${room.id}/playerHands`, actingPlayerId), {
-        playerId: actingPlayerId,
-        roomId: room.id,
-        cards: updatedHand,
-        updatedAt: new Date().toISOString(),
-      });
+      await setDoc(
+        doc(db, 'rooms', room.id, 'playerHands', actingPlayerId),
+        sanitizeForFirestore({
+          playerId: actingPlayerId,
+          roomId: room.id,
+          cards: updatedHand,
+          updatedAt: new Date().toISOString(),
+        })
+      );
 
       const currentIdx = room.players.findIndex((p) => p.id === actingPlayerId);
       const actingPlayer = room.players[currentIdx];
@@ -743,25 +881,29 @@ export default function App() {
 
       let recycleNote = drawRes.didRecycle ? ' (Market reshuffled from discard pile!)' : '';
 
-      await updateDoc(doc(db, 'rooms', room.id), {
-        market: drawRes.newMarket,
-        discardPile: drawRes.newDiscardPile,
-        marketCount: drawRes.newMarket.length,
-        players: updatedPlayers,
-        turnPlayerId: nextPlayer.id,
-        turnIndex: nextIndex,
-        turnStartedAt: Date.now(),
-        turnDuration: nextTurnDuration,
-        lastAction: {
-          text: `${actingPlayer.name} drew 1 card from General Market${recycleNote}`,
-          playerId: actingPlayerId,
-          playerName: actingPlayer.name,
-          timestamp: Date.now(),
-          badgeType: 'market',
-        },
-        updatedAt: new Date().toISOString(),
-      });
+      await updateDoc(
+        doc(db, 'rooms', room.id),
+        sanitizeForFirestore({
+          market: drawRes.newMarket,
+          discardPile: drawRes.newDiscardPile,
+          marketCount: drawRes.newMarket.length,
+          players: updatedPlayers,
+          turnPlayerId: nextPlayer.id,
+          turnIndex: nextIndex,
+          turnStartedAt: Date.now(),
+          turnDuration: nextTurnDuration,
+          lastAction: {
+            text: `${actingPlayer.name} drew 1 card from General Market${recycleNote}`,
+            playerId: actingPlayerId,
+            playerName: actingPlayer.name,
+            timestamp: Date.now(),
+            badgeType: 'market',
+          },
+          updatedAt: new Date().toISOString(),
+        })
+      );
     } catch (err) {
+      console.error('Draw error:', err);
       handleFirestoreError(err, OperationType.UPDATE, `rooms/${room.id}`);
     }
   };
@@ -891,12 +1033,17 @@ export default function App() {
   };
 
   // Sync mic/speaker status to room doc
-  const handlePlayerVoiceUpdate = async (micActive: boolean, speakerActive: boolean) => {
-    if (!room || !currentUserId) return;
+  const handlePlayerVoiceUpdate = useCallback(async (micActive: boolean, speakerActive: boolean) => {
+    if (!room) return;
 
     try {
+      const myId =
+        room.players.find((p) => p.id === currentUserId)?.id ||
+        room.players.find((p) => p.name === userName)?.id ||
+        currentUserId;
+
       const updatedPlayers = room.players.map((p) =>
-        p.id === currentUserId
+        p.id === myId
           ? { ...p, isMicActive: micActive, isSpeakerActive: speakerActive }
           : p
       );
@@ -908,7 +1055,14 @@ export default function App() {
     } catch {
       // Non-critical update
     }
-  };
+  }, [room, currentUserId, userName]);
+
+  const handleRemoteSpeakingUpdate = useCallback((peerId: string, isSpeaking: boolean) => {
+    setRemoteSpeakingMap((prev) => {
+      if (prev[peerId] === isSpeaking) return prev;
+      return { ...prev, [peerId]: isSpeaking };
+    });
+  }, []);
 
   return (
     <div className="min-h-screen bg-stone-950 text-stone-100 flex flex-col font-sans selection:bg-amber-500 selection:text-stone-950">
@@ -920,7 +1074,12 @@ export default function App() {
 
       {/* Main Container */}
       <main className="relative flex-1 flex flex-col items-center justify-center p-2 sm:p-4 z-10">
-        {!room || room.status === 'waiting' ? (
+        {!currentUser ? (
+          <AuthView
+            onAuthSuccess={handleAuthSuccess}
+            defaultAvatar={userAvatar}
+          />
+        ) : !room || room.status === 'waiting' ? (
           <LobbyView
             room={room}
             currentUser={currentUser}
@@ -944,35 +1103,63 @@ export default function App() {
             clearError={() => setErrorMessage(null)}
           />
         ) : (
-          <GameBoard
-            room={room}
-            currentPlayerId={currentUserId}
-            playerHand={playerHand}
-            onPlayCard={(card, declaredShape) =>
-              executePlayerMove(currentUserId, playerHand, card, declaredShape)
-            }
-            onDrawFromMarket={() => executeDrawAction(currentUserId, playerHand)}
-            onHandleTimeout={handleTimeout}
-            onRematch={handleRematch}
-            onOpenRules={() => setShowRulesModal(true)}
-            isHost={room.hostId === currentUserId}
-          />
+          (() => {
+            const me =
+              room.players.find((p) => p.id === currentUserId) ||
+              room.players.find((p) => p.name === userName) ||
+              room.players[0];
+            const effectiveUserId = me?.id || currentUserId;
+            const currentHand =
+              playerHand.length > 0
+                ? playerHand
+                : (room.allHands && room.allHands[effectiveUserId]) || [];
+
+            return (
+              <GameBoard
+                room={room}
+                currentPlayerId={effectiveUserId}
+                playerHand={currentHand}
+                onPlayCard={(card, declaredShape) =>
+                  executePlayerMove(effectiveUserId, currentHand, card, declaredShape)
+                }
+                onDrawFromMarket={() => executeDrawAction(effectiveUserId, currentHand)}
+                onHandleTimeout={handleTimeout}
+                onRematch={handleRematch}
+                onOpenRules={() => setShowRulesModal(true)}
+                isHost={room.hostId === effectiveUserId || room.players[0]?.id === effectiveUserId}
+                remoteSpeakingMap={remoteSpeakingMap}
+                onOpenChat={() => setChatOpenTrigger((prev) => prev + 1)}
+              />
+            );
+          })()
         )}
       </main>
 
       {/* Chat & Voice Floating Bar (Active whenever inside a room) */}
-      {room && (
-        <ChatVoiceBar
-          roomId={room.id}
-          currentPlayer={{
-            id: currentUserId,
-            name: userName,
-            avatar: userAvatar,
-          }}
-          players={room.players}
-          onPlayerVoiceUpdate={handlePlayerVoiceUpdate}
-        />
-      )}
+      {room && (() => {
+        const me =
+          room.players.find((p) => p.id === currentUserId) ||
+          room.players.find((p) => p.name === userName) ||
+          room.players.find((p) => !p.isBot) ||
+          room.players[0];
+        const effectiveUserId = me?.id || currentUserId;
+
+        return (
+          <ChatVoiceBar
+            roomId={room.id}
+            currentPlayer={{
+              id: effectiveUserId,
+              name: me?.name || userName,
+              avatar: me?.avatar || userAvatar,
+            }}
+            players={room.players}
+            recentMessages={room.recentMessages}
+            chatOpenTrigger={chatOpenTrigger}
+            onPlayerVoiceUpdate={handlePlayerVoiceUpdate}
+            onRemoteSpeakingUpdate={handleRemoteSpeakingUpdate}
+          />
+        );
+      })()}
 
       {/* Rules Modal */}
       <RulesModal

@@ -15,13 +15,14 @@ import {
   Clock,
   UserCheck,
   Zap,
+  Mic,
 } from 'lucide-react';
 import { GameRoom, PlayerSummary } from '../types/wott';
 import { User } from 'firebase/auth';
 
 interface LobbyViewProps {
   room: GameRoom | null;
-  currentUser: User | null;
+  currentUser: { uid?: string; email?: string | null; displayName?: string | null } | null;
   currentUserId: string;
   userName: string;
   setUserName: (name: string) => void;
@@ -109,19 +110,42 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
     }
   };
 
-  const isHost = room?.hostId === currentUserId || (room?.players && room.players[0]?.id === currentUserId);
-  const me = room?.players.find((p) => p.id === currentUserId);
+  const me =
+    room?.players.find((p) => p.id === currentUserId) ||
+    room?.players.find((p) => p.name === userName) ||
+    (room?.players && room.players[0]);
+  const effectiveUserId = me?.id || currentUserId;
+  const isHost =
+    room?.hostId === effectiveUserId ||
+    (room?.players && room.players[0]?.id === effectiveUserId) ||
+    me?.isHost === true;
   const myReadyState = me?.isReady ?? isHost;
 
-  // Count ready players
+  // Strict opponent ready check: Every human opponent MUST click ready before game can start
+  const humanOpponents = room?.players.filter((p) => p.id !== effectiveUserId && !p.isBot) ?? [];
+  const unreadyOpponents = humanOpponents.filter((p) => !p.isReady);
+  const areAllOpponentsReady = humanOpponents.length === 0 || unreadyOpponents.length === 0;
   const readyPlayersCount = room?.players.filter((p) => p.isReady || p.isHost || p.isBot).length ?? 0;
   const totalPlayers = room?.players.length ?? 0;
-  const allReady = totalPlayers >= 2 && readyPlayersCount === totalPlayers;
+  const canStartGame = areAllOpponentsReady && (totalPlayers >= 2 || (isHost && totalPlayers === 1));
 
   // Render Waiting Room Lobby if already in a room
   if (room && room.status === 'waiting') {
     return (
       <div className="max-w-2xl w-full mx-auto p-4 sm:p-6 bg-stone-900/90 border border-amber-600/40 rounded-3xl shadow-2xl backdrop-blur-md text-stone-100 animate-fade-in">
+        {/* Error Alert if any */}
+        {errorMessage && (
+          <div className="mb-4 p-3.5 bg-red-950/90 border border-red-500/50 rounded-2xl flex items-center justify-between text-xs text-red-200 shadow-lg">
+            <span>{errorMessage}</span>
+            <button
+              onClick={clearError}
+              className="text-stone-400 hover:text-white font-bold ml-2 cursor-pointer px-2 py-0.5 rounded-lg bg-stone-800"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
         {/* Lobby Header */}
         <div className="text-center mb-5">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs font-bold uppercase tracking-wider mb-2">
@@ -131,7 +155,7 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
             Game Room: <span className="font-mono text-white tracking-widest">{room.id}</span>
           </h2>
           <p className="text-sm text-stone-300 mt-1">
-            Share the code with friends! Once players click <strong className="text-emerald-400">Ready</strong>, the host can start the game.
+            Share the code with friends! Once players click <strong className="text-emerald-400">Ready</strong>, click <strong className="text-amber-400">Start Game</strong> to begin immediately.
           </p>
         </div>
 
@@ -270,8 +294,8 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
                         )}
                       </div>
 
-                      {/* Ready Badge */}
-                      <div className="mt-1 flex items-center gap-1">
+                      {/* Ready Badge & Voice Status */}
+                      <div className="mt-1 flex items-center gap-1.5 flex-wrap">
                         {isPlayerReady ? (
                           <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-md border border-emerald-500/30">
                             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
@@ -281,6 +305,11 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
                           <span className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded-md border border-amber-500/30">
                             <Clock size={11} />
                             Waiting...
+                          </span>
+                        )}
+                        {!p.isBot && p.isMicActive && (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-400 bg-emerald-950/60 px-1.5 py-0.5 rounded border border-emerald-500/40">
+                            <Mic size={10} className="animate-pulse" /> Mic On
                           </span>
                         )}
                       </div>
@@ -325,23 +354,42 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
 
               <button
                 onClick={onStartGame}
-                disabled={isCreatingOrJoining}
-                className="w-full sm:w-auto flex items-center justify-center gap-2 px-8 py-3.5 rounded-2xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-stone-950 text-sm font-black shadow-xl shadow-amber-500/25 transition-all cursor-pointer active:scale-95"
+                disabled={!canStartGame || isCreatingOrJoining}
+                className={`w-full sm:w-auto flex items-center justify-center gap-2 px-8 py-3.5 rounded-2xl text-sm font-black transition-all cursor-pointer ${
+                  canStartGame && !isCreatingOrJoining
+                    ? 'bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-stone-950 shadow-xl shadow-amber-500/25 active:scale-95 animate-pulse'
+                    : 'bg-stone-800 text-stone-400 border border-stone-700 cursor-not-allowed opacity-80'
+                }`}
+                title={
+                  !areAllOpponentsReady
+                    ? `Opponents must click Ready first! Waiting for: ${unreadyOpponents.map((o) => o.name).join(', ')}`
+                    : 'Start Game'
+                }
               >
                 <Play size={18} fill="currentColor" />
                 {isCreatingOrJoining
                   ? 'Starting Wott...'
-                  : allReady
-                  ? `Start Game Now (${room.players.length} Players)`
+                  : !areAllOpponentsReady
+                  ? `Waiting for ${unreadyOpponents[0]?.name || 'Opponent'} to click Ready...`
                   : room.players.length === 1
-                  ? 'Start Game (Adds Bot)'
-                  : `Start Game (${readyPlayersCount}/${room.players.length} Ready)`}
+                  ? 'Start Game (With Bot)'
+                  : `Everyone Ready! Start Game (${room.players.length} Players)`}
               </button>
             </div>
           ) : (
-            <div className="flex items-center gap-2 text-xs text-amber-300 font-medium animate-pulse">
-              <span className="w-2 h-2 rounded-full bg-amber-400" />
-              Waiting for host to start the game...
+            <div className="w-full sm:w-auto flex flex-col sm:flex-row items-center gap-3">
+              <div className="flex items-center gap-2 text-xs text-amber-300 font-medium">
+                <span className={`w-2.5 h-2.5 rounded-full ${myReadyState ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+                {myReadyState ? (
+                  <span>
+                    You are Ready! Waiting for host to click <strong>Start Game</strong>...
+                  </span>
+                ) : (
+                  <span className="text-amber-400 font-bold animate-pulse">
+                    ⚠️ Please click "Click Here to Ready Up!" above so the game can start!
+                  </span>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -365,49 +413,36 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
         </p>
       </div>
 
-      {/* Account / Player Bar */}
+      {/* Account / Player Bar - Displays ONLY in-game name and avatar (Zero email exposure) */}
       <div className="mb-5 bg-stone-950/80 p-3.5 rounded-2xl border border-stone-800 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
         <div className="flex items-center gap-2.5">
-          <div className="w-7 h-7 rounded-full bg-emerald-500/20 border border-emerald-500/50 text-emerald-400 flex items-center justify-center font-bold">
-            <UserCheck size={14} />
+          <div className="w-9 h-9 rounded-xl bg-amber-500/20 border border-amber-500/40 text-amber-400 flex items-center justify-center text-lg font-bold shadow-inner">
+            {userAvatar}
           </div>
           <div>
             <div className="font-bold text-stone-200 flex items-center gap-1.5">
               <span>Playing as:</span>
-              <strong className="text-amber-400 font-black">{userName}</strong>
-              {currentUser && <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-1 rounded">Google Verified</span>}
+              <strong className="text-amber-400 font-black text-sm">{userName}</strong>
+              <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-1.5 py-0.5 rounded font-semibold border border-emerald-500/30">
+                Verified
+              </span>
             </div>
-            <div className="text-[11px] text-stone-400 font-mono">
-              {userEmail || 'Active Player'}
+            <div className="text-[11px] text-stone-400">
+              Ready for Online Multiplayer
             </div>
           </div>
         </div>
 
-        {/* Optional Google Login */}
+        {/* Switch User / Sign Out */}
         <div className="flex items-center gap-2">
-          {!currentUser ? (
-            <button
-              onClick={onSignInWithGoogle}
-              disabled={isCreatingOrJoining}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-stone-800 hover:bg-stone-700 text-stone-200 border border-stone-700 font-bold text-xs shadow-sm transition-all cursor-pointer"
-              title="Sign in with your Google account"
-            >
-              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24">
-                <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
-                <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
-                <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" />
-                <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
-              </svg>
-              <span>Link Google</span>
-            </button>
-          ) : (
-            <button
-              onClick={onSignOut}
-              className="flex items-center gap-1 text-[11px] text-stone-400 hover:text-red-400 transition-colors cursor-pointer"
-            >
-              <LogOut size={13} /> Sign Out
-            </button>
-          )}
+          <button
+            onClick={onSignOut}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-stone-800 hover:bg-stone-700 text-stone-300 hover:text-red-400 border border-stone-700 text-xs font-bold transition-all cursor-pointer"
+            title="Sign out or switch account"
+          >
+            <LogOut size={13} />
+            <span>Switch User / Logout</span>
+          </button>
         </div>
       </div>
 

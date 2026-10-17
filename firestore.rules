@@ -8,46 +8,33 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
-    function isValidId(id) {
-      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
-    }
-
     // Room collection: Accessible by room code to allow seamless multiplayer in iframe/mobile
     match /rooms/{roomId} {
-      allow read: if isValidId(roomId);
-      allow create: if isValidId(roomId)
-        && request.resource.data.id is string
-        && request.resource.data.hostId is string
-        && request.resource.data.maxPlayers is number
-        && request.resource.data.status in ['waiting', 'in_progress', 'finished'];
-      allow update: if isValidId(roomId);
-      allow delete: if isValidId(roomId);
+      allow read, write: if true;
 
       // Private player hand
       match /playerHands/{playerId} {
-        allow read: if isValidId(playerId);
-        allow write: if isValidId(playerId);
+        allow read, write: if true;
       }
 
       // Live chat messages
       match /messages/{messageId} {
-        allow read: if isValidId(messageId);
-        allow create: if isValidId(messageId)
-          && request.resource.data.text is string
-          && request.resource.data.text.size() <= 500;
-        allow update, delete: if isValidId(messageId);
+        allow read, write: if true;
       }
 
       // WebRTC voice signaling
       match /signals/{signalId} {
-        allow read: if isValidId(signalId);
-        allow create: if isValidId(signalId);
-        allow delete: if isValidId(signalId);
+        allow read, write: if true;
       }
     }
 
     // Connection test document
     match /test/{docId} {
+      allow read, write: if true;
+    }
+
+    // User profiles collection
+    match /users/{userId} {
       allow read, write: if true;
     }
   }
