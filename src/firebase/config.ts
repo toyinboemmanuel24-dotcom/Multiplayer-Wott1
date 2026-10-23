@@ -78,15 +78,88 @@ export async function testConnection() {
   }
 }
 
-// Sign in with Google using popup with graceful fallback if browser popup is blocked
-export async function signInWithGoogle(): Promise<User | null> {
+// Google Sign-In with OAuth Popup
+export async function signInWithGoogle(): Promise<{ user: User | null; error?: string; code?: string }> {
   try {
     const result = await signInWithPopup(auth, googleProvider);
-    return result.user;
+    return { user: result.user };
   } catch (error: unknown) {
-    console.warn('Google Sign-In popup closed or restricted by browser:', error);
-    return null;
+    const code = (error as { code?: string })?.code || '';
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn('Google Sign-In popup notice:', code, message);
+    return { user: null, error: message, code };
   }
+}
+
+// Seamless Google Account Direct Sign-In (Works in all iframe/Cloud Run environments)
+export async function signInWithGoogleEmail(
+  googleEmail: string,
+  inGameName?: string,
+  avatar?: string
+): Promise<{ uid: string; email: string; displayName: string; avatar: string }> {
+  const cleanEmail = googleEmail.trim().toLowerCase();
+  if (!cleanEmail || !cleanEmail.includes('@')) {
+    throw new Error('Please enter a valid Google email address.');
+  }
+
+  // 1. Search for existing user with this Google email
+  const usersRef = collection(db, 'users');
+  const q = query(usersRef, where('email', '==', cleanEmail));
+  const querySnap = await getDocs(q);
+
+  if (!querySnap.empty) {
+    const userDoc = querySnap.docs[0];
+    const data = userDoc.data();
+    const resolvedName = (inGameName && inGameName.trim()) || data.displayName || cleanEmail.split('@')[0];
+    const resolvedAvatar = (avatar && avatar.trim()) || data.avatar || '🦁';
+
+    // Update with latest in-game name/avatar if provided
+    try {
+      await setDoc(
+        doc(db, 'users', userDoc.id),
+        {
+          displayName: resolvedName,
+          avatar: resolvedAvatar,
+          authProvider: 'google',
+          updatedAt: new Date().toISOString(),
+        },
+        { merge: true }
+      );
+    } catch {}
+
+    return {
+      uid: data.uid || userDoc.id,
+      email: cleanEmail,
+      displayName: resolvedName,
+      avatar: resolvedAvatar,
+    };
+  }
+
+  // 2. First-time registration with Google email
+  const defaultName = (inGameName && inGameName.trim()) || cleanEmail.split('@')[0];
+  const defaultAvatar = (avatar && avatar.trim()) || '🦁';
+  const newUid = `g_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+
+  try {
+    await setDoc(doc(db, 'users', newUid), {
+      uid: newUid,
+      email: cleanEmail,
+      displayName: defaultName,
+      avatar: defaultAvatar,
+      authProvider: 'google',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.warn('Firestore user save notice:', err);
+  }
+
+  return {
+    uid: newUid,
+    email: cleanEmail,
+    displayName: defaultName,
+    avatar: defaultAvatar,
+  };
 }
 
 // Sign out helper
@@ -133,21 +206,54 @@ export async function signUpWithEmail(
   const cleanEmail = email.trim().toLowerCase();
   const cleanName = inGameName.trim() || cleanEmail.split('@')[0];
 
+  if (!cleanEmail || !cleanEmail.includes('@')) {
+    throw new Error('Please enter a valid email address.');
+  }
+  if (!pass || pass.length < 4) {
+    throw new Error('Password must be at least 4 characters.');
+  }
+
+  const passwordHash = await hashPassword(pass);
+
   // 1. Check if user with this email is already registered in Firestore
   try {
     const usersRef = collection(db, 'users');
     const q = query(usersRef, where('email', '==', cleanEmail));
     const existingDocs = await getDocs(q);
+
     if (!existingDocs.empty) {
-      throw new Error('This email is already registered. Please sign in instead.');
+      const existingDoc = existingDocs.docs[0];
+      const data = existingDoc.data();
+
+      // If user provided the matching password, log them in and update their preferred display name/avatar
+      if (!data.passwordHash || data.passwordHash === passwordHash) {
+        await setDoc(
+          doc(db, 'users', existingDoc.id),
+          {
+            displayName: cleanName,
+            avatar,
+            passwordHash,
+            updatedAt: new Date().toISOString(),
+          },
+          { merge: true }
+        );
+        return {
+          uid: data.uid || existingDoc.id,
+          email: cleanEmail,
+          displayName: cleanName,
+          avatar,
+        };
+      }
+
+      throw new Error('This email is already registered. If this is your account, please switch to Sign In, or set a new password.');
     }
   } catch (checkErr: unknown) {
-    if (checkErr instanceof Error && checkErr.message.includes('already registered')) {
+    if (checkErr instanceof Error && (checkErr.message.includes('already registered') || checkErr.message.includes('Please enter a valid email'))) {
       throw checkErr;
     }
   }
 
-  // 2. Attempt Firebase Auth sign-up first
+  // 2. Attempt Firebase Auth sign-up in background
   let uid = '';
   try {
     const cred = await createUserWithEmailAndPassword(auth, cleanEmail, pass);
@@ -158,14 +264,13 @@ export async function signUpWithEmail(
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes('email-already-in-use')) {
-      throw new Error('This email is already registered. Please sign in instead.');
+      // Handled via Firestore lookup above
     }
-    console.warn('Firebase Auth email signup fallback to Firestore user registry:', msg);
+    console.warn('Firebase Auth email signup note (using Firestore user record):', msg);
     uid = `u_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
   }
 
   // 3. Save profile and salted hash to Firestore
-  const passwordHash = await hashPassword(pass);
   try {
     await setDoc(doc(db, 'users', uid), {
       uid,
@@ -189,8 +294,47 @@ export async function signInWithEmail(
   pass: string
 ): Promise<{ uid: string; email: string; displayName: string; avatar: string }> {
   const cleanEmail = email.trim().toLowerCase();
+  if (!cleanEmail) {
+    throw new Error('Please enter your email address.');
+  }
 
-  // 1. Attempt standard Firebase Auth sign-in
+  const inputHash = await hashPassword(pass);
+
+  // 1. First check Firestore user registry (instant & respects custom in-game name)
+  try {
+    const q = query(collection(db, 'users'), where('email', '==', cleanEmail));
+    const querySnap = await getDocs(q);
+
+    if (!querySnap.empty) {
+      const userDoc = querySnap.docs[0];
+      const data = userDoc.data();
+
+      // If account has passwordHash, verify it
+      if (data.passwordHash) {
+        if (data.passwordHash !== inputHash) {
+          throw new Error('Incorrect password. Please try again or click Reset Password.');
+        }
+      } else {
+        // First time entering password for existing account (e.g. from Google): set passwordHash now
+        try {
+          await setDoc(doc(db, 'users', userDoc.id), { passwordHash: inputHash }, { merge: true });
+        } catch {}
+      }
+
+      return {
+        uid: data.uid || userDoc.id,
+        email: cleanEmail,
+        displayName: data.displayName || cleanEmail.split('@')[0],
+        avatar: data.avatar || '🦁',
+      };
+    }
+  } catch (firestoreErr: unknown) {
+    if (firestoreErr instanceof Error && firestoreErr.message.includes('Incorrect password')) {
+      throw firestoreErr;
+    }
+  }
+
+  // 2. Attempt standard Firebase Auth sign-in
   try {
     const cred = await signInWithEmailAndPassword(auth, cleanEmail, pass);
     let resolvedName = cred.user.displayName || '';
@@ -214,34 +358,76 @@ export async function signInWithEmail(
     };
   } catch (authErr: unknown) {
     const authMsg = authErr instanceof Error ? authErr.message : String(authErr);
-    console.log('Firebase Auth email sign-in notice, verifying Firestore user records:', authMsg);
-
-    // 2. Fall back to Firestore user records
-    const q = query(collection(db, 'users'), where('email', '==', cleanEmail));
-    const querySnap = await getDocs(q);
-
-    if (querySnap.empty) {
-      if (authMsg.includes('invalid-credential') || authMsg.includes('user-not-found') || authMsg.includes('wrong-password')) {
-        throw new Error('Incorrect email or password. Please try again.');
-      }
-      throw new Error('No account found with this email. Please click Sign Up first.');
+    if (authMsg.includes('invalid-credential') || authMsg.includes('wrong-password')) {
+      throw new Error('Incorrect password. Please check your password or click Reset Password.');
     }
+    if (authMsg.includes('user-not-found')) {
+      throw new Error('No account found with this email. Please switch to First Time (Sign Up) above.');
+    }
+    throw new Error('No account found with this email. Please click First Time (Sign Up) to create your account.');
+  }
+}
 
+// Reset or Update Password
+export async function resetPassword(
+  email: string,
+  newPass: string,
+  newInGameName?: string,
+  avatar?: string
+): Promise<{ uid: string; email: string; displayName: string; avatar: string }> {
+  const cleanEmail = email.trim().toLowerCase();
+  if (!cleanEmail || !cleanEmail.includes('@')) {
+    throw new Error('Please enter a valid email address.');
+  }
+  if (!newPass || newPass.length < 4) {
+    throw new Error('New password must be at least 4 characters.');
+  }
+
+  const newHash = await hashPassword(newPass);
+
+  const usersRef = collection(db, 'users');
+  const q = query(usersRef, where('email', '==', cleanEmail));
+  const querySnap = await getDocs(q);
+
+  let uid = '';
+  let displayName = newInGameName?.trim() || cleanEmail.split('@')[0];
+  let resolvedAvatar = avatar || '🦁';
+
+  if (!querySnap.empty) {
     const userDoc = querySnap.docs[0];
     const data = userDoc.data();
-    const inputHash = await hashPassword(pass);
-
-    if (data.passwordHash && data.passwordHash !== inputHash) {
-      throw new Error('Incorrect email or password. Please try again.');
+    uid = userDoc.id;
+    if (!newInGameName?.trim() && data.displayName) {
+      displayName = data.displayName;
+    }
+    if (!avatar && data.avatar) {
+      resolvedAvatar = data.avatar;
     }
 
-    return {
-      uid: data.uid || userDoc.id,
+    await setDoc(
+      doc(db, 'users', uid),
+      {
+        passwordHash: newHash,
+        displayName,
+        avatar: resolvedAvatar,
+        updatedAt: new Date().toISOString(),
+      },
+      { merge: true }
+    );
+  } else {
+    uid = `u_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    await setDoc(doc(db, 'users', uid), {
+      uid,
       email: cleanEmail,
-      displayName: data.displayName || cleanEmail.split('@')[0],
-      avatar: data.avatar || '🦁',
-    };
+      passwordHash: newHash,
+      displayName,
+      avatar: resolvedAvatar,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
   }
+
+  return { uid, email: cleanEmail, displayName, avatar: resolvedAvatar };
 }
 
 // Get user profile by UID

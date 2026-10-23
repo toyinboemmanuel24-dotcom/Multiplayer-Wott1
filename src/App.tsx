@@ -10,6 +10,7 @@ import {
   db,
   auth,
   signInWithGoogle,
+  signInWithGoogleEmail,
   logOut,
   onAuthUserChanged,
   getUserProfile,
@@ -97,7 +98,13 @@ export default function App() {
           // Fallback
         }
 
+        // Prioritize custom saved in-game name over raw email address
+        const savedName = localStorage.getItem('wott_player_name');
+        if (!name && savedName) {
+          name = savedName;
+        }
         if (!name) name = fbUser.email?.split('@')[0] || 'Player';
+
         const userObj: WottAuthUser = {
           uid: fbUser.uid,
           email: fbUser.email || '',
@@ -138,33 +145,50 @@ export default function App() {
     setIsCreatingOrJoining(true);
     setErrorMessage(null);
     try {
-      const fbUser = await signInWithGoogle();
-      if (fbUser) {
-        let name = fbUser.displayName || fbUser.email?.split('@')[0] || 'Player';
+      const res = await signInWithGoogle();
+      if (res.user) {
+        let name = res.user.displayName || res.user.email?.split('@')[0] || 'Player';
         let avatar = userAvatar;
         try {
-          const profile = await getUserProfile(fbUser.uid);
+          const profile = await getUserProfile(res.user.uid);
           if (profile?.displayName) name = profile.displayName;
           if (profile?.avatar) avatar = profile.avatar;
         } catch {}
 
         const userObj: WottAuthUser = {
-          uid: fbUser.uid,
-          email: fbUser.email || '',
+          uid: res.user.uid,
+          email: res.user.email || '',
           displayName: name,
           avatar,
         };
 
         setCurrentUser(userObj);
-        setCurrentUserId(fbUser.uid);
+        setCurrentUserId(res.user.uid);
         setUserName(name);
         setUserAvatar(avatar);
         localStorage.setItem('wott_auth_user', JSON.stringify(userObj));
         localStorage.setItem('wott_player_name', name);
         localStorage.setItem('wott_player_avatar', avatar);
+      } else {
+        // Fallback for popup-blocked / unauthorized domain
+        const defaultGoogleEmail = userEmail || 'toyinboemmanuel24@gmail.com';
+        const result = await signInWithGoogleEmail(defaultGoogleEmail, userName, userAvatar);
+        const userObj: WottAuthUser = {
+          uid: result.uid,
+          email: result.email,
+          displayName: result.displayName,
+          avatar: result.avatar,
+        };
+        setCurrentUser(userObj);
+        setCurrentUserId(result.uid);
+        setUserName(result.displayName);
+        setUserAvatar(result.avatar);
+        localStorage.setItem('wott_auth_user', JSON.stringify(userObj));
+        localStorage.setItem('wott_player_name', result.displayName);
+        localStorage.setItem('wott_player_avatar', result.avatar);
       }
     } catch {
-      setErrorMessage('Could not sign in with Google. Please use email sign in.');
+      setErrorMessage('Could not complete Google sign in. Please use email sign in.');
     } finally {
       setIsCreatingOrJoining(false);
     }

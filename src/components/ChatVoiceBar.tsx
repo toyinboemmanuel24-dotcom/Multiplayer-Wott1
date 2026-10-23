@@ -416,32 +416,22 @@ export const ChatVoiceBar: React.FC<ChatVoiceBarProps> = ({
     setMicError(null);
 
     try {
-      if (!isMicOn) {
-        const acquired = await voiceCtrlRef.current.initLocalMicrophone();
-        if (!acquired) {
-          setMicError('Mic permission needed. Please allow microphone in browser.');
-          return;
-        }
-        setIsMicOn(true);
-        if (onPlayerVoiceUpdate) {
-          onPlayerVoiceUpdate(true, isSpeakerOn);
-        }
-      } else {
-        const active = await voiceCtrlRef.current.toggleMic();
-        setIsMicOn(active);
-        if (onPlayerVoiceUpdate) {
-          onPlayerVoiceUpdate(active, isSpeakerOn);
-        }
+      voiceCtrlRef.current.unlockAudio();
+      const active = await voiceCtrlRef.current.toggleMic();
+      setIsMicOn(active);
+      if (onPlayerVoiceUpdate) {
+        onPlayerVoiceUpdate(active, isSpeakerOn);
       }
     } catch (err) {
       console.warn('Error toggling microphone:', err);
-      setMicError('Could not start microphone.');
+      setMicError('Could not start microphone. Please check permissions.');
     }
   };
 
   // Toggle Speaker
   const toggleSpeaker = () => {
     if (!voiceCtrlRef.current) return;
+    voiceCtrlRef.current.unlockAudio();
     const active = voiceCtrlRef.current.toggleSpeaker();
     setIsSpeakerOn(active);
     if (onPlayerVoiceUpdate) {
